@@ -68,6 +68,12 @@ Inspect a job:
 cpu-mode jobs show job_...
 ```
 
+Download a job profile:
+
+```bash
+cpu-mode jobs profile job_... --output profile.txt
+```
+
 Show a user submission history:
 
 ```bash

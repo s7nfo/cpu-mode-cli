@@ -137,6 +137,12 @@ enum JobsCommand {
         #[arg(long)]
         cursor: Option<String>,
     },
+    Profile {
+        job_id: String,
+
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Args)]
@@ -274,6 +280,10 @@ impl ApiClient {
         self.request(Method::GET, path, query, None).await
     }
 
+    async fn get_text(&self, path: &str, query: &[(&str, String)]) -> Result<String> {
+        self.request_text(Method::GET, path, query, None).await
+    }
+
     async fn post(&self, path: &str, body: Value) -> Result<Value> {
         self.request(Method::POST, path, &[], Some(body)).await
     }
@@ -285,6 +295,17 @@ impl ApiClient {
         query: &[(&str, String)],
         body: Option<Value>,
     ) -> Result<Value> {
+        let text = self.request_text(method, path, query, body).await?;
+        parse_json_body(&text)
+    }
+
+    async fn request_text(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<Value>,
+    ) -> Result<String> {
         let mut url = self.url(path)?;
         {
             let mut pairs = url.query_pairs_mut();
@@ -310,7 +331,7 @@ impl ApiClient {
         if !status.is_success() {
             bail!("HTTP {status}: {text}");
         }
-        parse_json_body(&text)
+        Ok(text)
     }
 
     fn url(&self, path: &str) -> Result<Url> {
@@ -566,6 +587,36 @@ async fn handle_jobs(args: JobsArgs, client: &ApiClient, output: OutputMode) -> 
                 &client.get("/api/jobs/non-done", &query).await?,
                 print_jobs_page,
             )
+        }
+        JobsCommand::Profile {
+            job_id,
+            output: path,
+        } => {
+            let profile = client
+                .get_text(&format!("/api/jobs/{}/profile", enc(&job_id)), &[])
+                .await?;
+            if output.raw {
+                if path.is_some() {
+                    bail!("--output cannot be used with --raw");
+                }
+                print!("{profile}");
+                Ok(())
+            } else {
+                let path = path.unwrap_or_else(|| {
+                    PathBuf::from(format!(
+                        "{}.perf-annotate.txt",
+                        safe_filename_component(&job_id)
+                    ))
+                });
+                fs::write(&path, profile.as_bytes())
+                    .with_context(|| format!("write profile {}", path.display()))?;
+                println!(
+                    "Downloaded profile to {} ({} bytes)",
+                    path.display(),
+                    profile.len()
+                );
+                Ok(())
+            }
         }
     }
 }
@@ -1066,6 +1117,16 @@ fn format_count(value: u64) -> String {
         out.push(ch);
     }
     out
+}
+
+fn safe_filename_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' => ch,
+            _ => '_',
+        })
+        .collect()
 }
 
 fn print_table(headers: &[&str], rows: &[Vec<String>]) {
