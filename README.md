@@ -47,7 +47,7 @@ cpu-mode challenges list
 Print the raw API response:
 
 ```bash
-cpu-mode challenges list --raw
+cpu-mode --raw challenges list
 ```
 
 Show challenge metadata:
@@ -74,5 +74,5 @@ Show a user submission history:
 cpu-mode users jobs github:34958324 --challenge counting_bytes --limit 20
 ```
 
-Most command output is JSON. Challenge commands default to human-readable output; pass
-`--raw` to print the API response.
+Command output is human-readable by default. Pass global `--raw` when an agent or script
+needs the exact JSON API response.

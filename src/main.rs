@@ -3,12 +3,12 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 use directories::ProjectDirs;
 use reqwest::{Client, Method, Url};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::time::sleep;
 
 const DEFAULT_BASE_URL: &str = "https://cpu.mattstuchlik.com";
@@ -23,6 +23,9 @@ struct Cli {
 
     #[arg(long, global = true, env = "CPU_MODE_TOKEN")]
     token: Option<String>,
+
+    #[arg(long, global = true)]
+    raw: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -67,16 +70,8 @@ struct ChallengesArgs {
 
 #[derive(Subcommand)]
 enum ChallengesCommand {
-    List {
-        #[arg(long)]
-        raw: bool,
-    },
-    Show {
-        challenge_id: String,
-
-        #[arg(long)]
-        raw: bool,
-    },
+    List,
+    Show { challenge_id: String },
 }
 
 #[derive(Args)]
@@ -359,29 +354,43 @@ async fn main() -> Result<()> {
         .clone()
         .or_else(|| store.token().map(str::to_string));
     let client = ApiClient::new(cli.base_url, token);
+    let output = OutputMode { raw: cli.raw };
 
     match cli.command {
-        Command::Auth(args) => handle_auth(args, &client, &mut store).await,
-        Command::Challenges(args) => handle_challenges(args, &client).await,
-        Command::Systems(args) => handle_systems(args, &client).await,
-        Command::Leaderboard(args) => handle_leaderboard(args, &client).await,
-        Command::Submit(args) => handle_submit(args, &client).await,
-        Command::Jobs(args) => handle_jobs(args, &client).await,
-        Command::Users(args) => handle_users(args, &client).await,
-        Command::Solutions(args) => handle_solutions(args, &client).await,
+        Command::Auth(args) => handle_auth(args, &client, &mut store, output).await,
+        Command::Challenges(args) => handle_challenges(args, &client, output).await,
+        Command::Systems(args) => handle_systems(args, &client, output).await,
+        Command::Leaderboard(args) => handle_leaderboard(args, &client, output).await,
+        Command::Submit(args) => handle_submit(args, &client, output).await,
+        Command::Jobs(args) => handle_jobs(args, &client, output).await,
+        Command::Users(args) => handle_users(args, &client, output).await,
+        Command::Solutions(args) => handle_solutions(args, &client, output).await,
     }
 }
 
-async fn handle_auth(args: AuthArgs, client: &ApiClient, store: &mut ConfigStore) -> Result<()> {
+#[derive(Clone, Copy)]
+struct OutputMode {
+    raw: bool,
+}
+
+async fn handle_auth(
+    args: AuthArgs,
+    client: &ApiClient,
+    store: &mut ConfigStore,
+    output: OutputMode,
+) -> Result<()> {
     match args.command {
-        AuthCommand::Login(args) => auth_login(args, client, store).await,
+        AuthCommand::Login(args) => auth_login(args, client, store, output).await,
         AuthCommand::Status => {
             let session = client.get("/auth/session", &[]).await?;
-            print_json(&session)
+            output.print(&session, print_auth_status)
         }
         AuthCommand::Logout => {
             store.clear_token()?;
-            print_json(&json!({"ok": true, "message": "local token removed"}))
+            output.print(
+                &json!({"ok": true, "message": "local token removed"}),
+                print_logout,
+            )
         }
     }
 }
@@ -390,6 +399,7 @@ async fn auth_login(
     args: AuthLoginArgs,
     client: &ApiClient,
     store: &mut ConfigStore,
+    output: OutputMode,
 ) -> Result<()> {
     let start: AuthStartResponse =
         serde_json::from_value(client.post("/auth/cli/start", json!({})).await?)
@@ -420,12 +430,15 @@ async fn auth_login(
                 if !args.no_store {
                     store.set_token(token.clone())?;
                 }
-                return print_json(&json!({
-                    "authenticated": true,
-                    "stored": !args.no_store,
-                    "user": poll.user,
-                    "token": if args.no_store { Some(token) } else { None },
-                }));
+                return output.print(
+                    &json!({
+                        "authenticated": true,
+                        "stored": !args.no_store,
+                        "user": poll.user,
+                        "token": if args.no_store { Some(token) } else { None },
+                    }),
+                    print_auth_login,
+                );
             }
             "pending" => {}
             "slow_down" => {
@@ -447,36 +460,38 @@ async fn auth_login(
     }
 }
 
-async fn handle_challenges(args: ChallengesArgs, client: &ApiClient) -> Result<()> {
+async fn handle_challenges(
+    args: ChallengesArgs,
+    client: &ApiClient,
+    output: OutputMode,
+) -> Result<()> {
     match args.command {
-        ChallengesCommand::List { raw } => {
+        ChallengesCommand::List => {
             let value = client.get("/api/challenges", &[]).await?;
-            if raw {
-                print_json(&value)
-            } else {
-                print_challenge_list(&value)
-            }
+            output.print(&value, print_challenge_list)
         }
-        ChallengesCommand::Show { challenge_id, raw } => {
+        ChallengesCommand::Show { challenge_id } => {
             let value = client
                 .get(&format!("/api/challenges/{}", enc(&challenge_id)), &[])
                 .await?;
-            if raw {
-                print_json(&value)
-            } else {
-                print_challenge_detail(&value)
-            }
+            output.print(&value, print_challenge_detail)
         }
     }
 }
 
-async fn handle_systems(args: SystemsArgs, client: &ApiClient) -> Result<()> {
+async fn handle_systems(args: SystemsArgs, client: &ApiClient, output: OutputMode) -> Result<()> {
     match args.command {
-        SystemsCommand::List => print_json(&client.get("/api/systems", &[]).await?),
+        SystemsCommand::List => {
+            output.print(&client.get("/api/systems", &[]).await?, print_systems)
+        }
     }
 }
 
-async fn handle_leaderboard(args: LeaderboardArgs, client: &ApiClient) -> Result<()> {
+async fn handle_leaderboard(
+    args: LeaderboardArgs,
+    client: &ApiClient,
+    output: OutputMode,
+) -> Result<()> {
     let mut query = Vec::new();
     if let Some(system) = args.system {
         query.push(("system_id", system));
@@ -487,10 +502,10 @@ async fn handle_leaderboard(args: LeaderboardArgs, client: &ApiClient) -> Result
             &query,
         )
         .await?;
-    print_json(&value)
+    output.print(&value, print_leaderboard)
 }
 
-async fn handle_submit(args: SubmitArgs, client: &ApiClient) -> Result<()> {
+async fn handle_submit(args: SubmitArgs, client: &ApiClient, output: OutputMode) -> Result<()> {
     let source = read_source(&args.file)?;
     let mut body = json!({
         "language": args.lang,
@@ -507,7 +522,7 @@ async fn handle_submit(args: SubmitArgs, client: &ApiClient) -> Result<()> {
         )
         .await?;
     if !args.wait {
-        return print_json(&submission);
+        return output.print(&submission, print_submission);
     }
 
     let jobs = submission
@@ -523,30 +538,39 @@ async fn handle_submit(args: SubmitArgs, client: &ApiClient) -> Result<()> {
         finished.push(watch_job(client, job_id, args.poll_interval_ms).await?);
     }
 
-    print_json(&json!({
-        "submission": submission,
-        "jobs": finished,
-    }))
+    output.print(
+        &json!({
+            "submission": submission,
+            "jobs": finished,
+        }),
+        print_submission_with_jobs,
+    )
 }
 
-async fn handle_jobs(args: JobsArgs, client: &ApiClient) -> Result<()> {
+async fn handle_jobs(args: JobsArgs, client: &ApiClient, output: OutputMode) -> Result<()> {
     match args.command {
-        JobsCommand::Show { job_id } => print_json(&get_job(client, &job_id).await?),
+        JobsCommand::Show { job_id } => output.print(&get_job(client, &job_id).await?, print_job),
         JobsCommand::Watch {
             job_id,
             poll_interval_ms,
-        } => print_json(&watch_job(client, &job_id, poll_interval_ms).await?),
+        } => output.print(
+            &watch_job(client, &job_id, poll_interval_ms).await?,
+            print_job,
+        ),
         JobsCommand::Queue { limit, cursor } => {
             let mut query = vec![("limit", limit.to_string())];
             if let Some(cursor) = cursor {
                 query.push(("cursor", cursor));
             }
-            print_json(&client.get("/api/jobs/non-done", &query).await?)
+            output.print(
+                &client.get("/api/jobs/non-done", &query).await?,
+                print_jobs_page,
+            )
         }
     }
 }
 
-async fn handle_users(args: UsersArgs, client: &ApiClient) -> Result<()> {
+async fn handle_users(args: UsersArgs, client: &ApiClient, output: OutputMode) -> Result<()> {
     match args.command {
         UsersCommand::Jobs {
             user_id,
@@ -564,17 +588,22 @@ async fn handle_users(args: UsersArgs, client: &ApiClient) -> Result<()> {
             let value = client
                 .get(&format!("/api/users/{}/jobs", enc(&user_id)), &query)
                 .await?;
-            print_json(&value)
+            output.print(&value, print_jobs_page)
         }
     }
 }
 
-async fn handle_solutions(args: SolutionsArgs, client: &ApiClient) -> Result<()> {
+async fn handle_solutions(
+    args: SolutionsArgs,
+    client: &ApiClient,
+    output: OutputMode,
+) -> Result<()> {
     match args.command {
-        SolutionsCommand::Show { solution_id } => print_json(
+        SolutionsCommand::Show { solution_id } => output.print(
             &client
                 .get(&format!("/api/solutions/{}", enc(&solution_id)), &[])
                 .await?,
+            print_solution,
         ),
         SolutionsCommand::Jobs {
             solution_id,
@@ -585,13 +614,14 @@ async fn handle_solutions(args: SolutionsArgs, client: &ApiClient) -> Result<()>
             if let Some(cursor) = cursor {
                 query.push(("cursor", cursor));
             }
-            print_json(
+            output.print(
                 &client
                     .get(
                         &format!("/api/solutions/{}/jobs", enc(&solution_id)),
                         &query,
                     )
                     .await?,
+                print_jobs_page,
             )
         }
     }
@@ -628,9 +658,55 @@ fn enc(value: &str) -> String {
     urlencoding::encode(value).into_owned()
 }
 
+impl OutputMode {
+    fn print(self, value: &Value, human: fn(&Value) -> Result<()>) -> Result<()> {
+        if self.raw {
+            print_json(value)
+        } else {
+            human(value)
+        }
+    }
+}
+
 fn print_json(value: &Value) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+fn print_auth_status(value: &Value) -> Result<()> {
+    if value.get("authenticated").and_then(Value::as_bool) == Some(true) {
+        println!("Authenticated");
+        if let Some(user) = value.get("user") {
+            print_user_line(user);
+        }
+    } else {
+        println!("Not authenticated");
+    }
+    Ok(())
+}
+
+fn print_auth_login(value: &Value) -> Result<()> {
+    println!("Authenticated");
+    if let Some(user) = value.get("user") {
+        print_user_line(user);
+    }
+    if value.get("stored").and_then(Value::as_bool) == Some(true) {
+        println!("Token stored locally");
+    } else if let Some(token) = value.get("token").and_then(Value::as_str) {
+        println!("Token: {token}");
+    }
+    Ok(())
+}
+
+fn print_logout(_: &Value) -> Result<()> {
+    println!("Local token removed");
+    Ok(())
+}
+
+fn print_user_line(user: &Value) {
+    let name = first_str(user, &["display_name", "name", "login"]).unwrap_or("-");
+    let id = first_str(user, &["id", "user_id"]).unwrap_or("-");
+    println!("User: {name} ({id})");
 }
 
 fn print_challenge_list(value: &Value) -> Result<()> {
@@ -732,6 +808,205 @@ fn print_challenge_detail(value: &Value) -> Result<()> {
     Ok(())
 }
 
+fn print_systems(value: &Value) -> Result<()> {
+    let systems = value
+        .as_array()
+        .ok_or_else(|| anyhow!("systems response was not an array"))?;
+    let rows = systems
+        .iter()
+        .map(|system| {
+            vec![
+                field_string(system, "id"),
+                field_string(system, "label"),
+                field_string(system, "uarch"),
+                field_u64(system, "cpu")
+                    .map(|cpu| cpu.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+            ]
+        })
+        .collect::<Vec<_>>();
+    print_table(&["ID", "LABEL", "UARCH", "CPU"], &rows);
+    Ok(())
+}
+
+fn print_leaderboard(value: &Value) -> Result<()> {
+    let challenge = field_string(value, "challenge_id");
+    let system = field_string(value, "system_id");
+    println!("{challenge} / {system}");
+
+    let entries = value
+        .get("entries")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("leaderboard response did not include entries array"))?;
+    if entries.is_empty() {
+        println!("No leaderboard entries.");
+        return Ok(());
+    }
+
+    let rows = entries
+        .iter()
+        .map(|entry| {
+            vec![
+                field_u64(entry, "rank")
+                    .map(|rank| rank.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                field_string(entry, "user_display_name"),
+                field_string(entry, "language"),
+                ns_field(entry, "time_ns"),
+                field_u64(entry, "cycles")
+                    .map(format_count)
+                    .unwrap_or_else(|| "-".to_string()),
+                field_string(entry, "job_id"),
+            ]
+        })
+        .collect::<Vec<_>>();
+    print_table(&["RANK", "USER", "LANG", "TIME", "CYCLES", "JOB"], &rows);
+    Ok(())
+}
+
+fn print_submission(value: &Value) -> Result<()> {
+    println!("Solution: {}", field_string(value, "solution_id"));
+    println!("User: {}", field_string(value, "user_id"));
+    print_submission_jobs(value);
+    Ok(())
+}
+
+fn print_submission_with_jobs(value: &Value) -> Result<()> {
+    let submission = value
+        .get("submission")
+        .ok_or_else(|| anyhow!("wait response did not include submission"))?;
+    print_submission(submission)?;
+
+    println!();
+    println!("Finished jobs:");
+    let jobs = value
+        .get("jobs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("wait response did not include jobs array"))?;
+    print_job_rows(jobs);
+    Ok(())
+}
+
+fn print_submission_jobs(value: &Value) {
+    let Some(jobs) = value.get("jobs").and_then(Value::as_array) else {
+        return;
+    };
+    if jobs.is_empty() {
+        println!("Jobs: none");
+        return;
+    }
+    let rows = jobs
+        .iter()
+        .map(|job| vec![field_string(job, "system_id"), field_string(job, "job_id")])
+        .collect::<Vec<_>>();
+    println!("Jobs:");
+    print_table(&["SYSTEM", "JOB"], &rows);
+}
+
+fn print_job(value: &Value) -> Result<()> {
+    println!("Job: {}", field_string(value, "id"));
+    println!("Challenge: {}", field_string(value, "challenge_id"));
+    println!("Solution: {}", field_string(value, "solution_id"));
+    println!("System: {}", field_string(value, "system_id"));
+    println!("Language: {}", field_string(value, "language"));
+    println!("Status: {}", field_string(value, "status"));
+    if let Some(time) = field_u64(value, "result_time_ns") {
+        println!("Time: {}", format_ns(time));
+    }
+    if let Some(time) = field_u64(value, "result_time_max_ns") {
+        println!("Max time: {}", format_ns(time));
+    }
+    if let Some(cycles) = field_u64(value, "result_cycles") {
+        println!("Cycles: {}", format_count(cycles));
+    }
+    if let Some(error) = value.get("result_error").and_then(Value::as_str) {
+        println!("Error: {error}");
+    }
+    if let Some(counters) = value.get("result_counters").and_then(Value::as_object) {
+        if !counters.is_empty() {
+            println!("Counters:");
+            for (name, count) in counters {
+                if let Some(count) = count.as_u64() {
+                    println!("  {name}: {}", format_count(count));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn print_jobs_page(value: &Value) -> Result<()> {
+    let jobs = value
+        .get("items")
+        .and_then(Value::as_array)
+        .or_else(|| value.as_array())
+        .ok_or_else(|| anyhow!("jobs response did not include items array"))?;
+    if jobs.is_empty() {
+        println!("No jobs.");
+    } else {
+        print_job_rows(jobs);
+    }
+    if let Some(cursor) = value.get("next_cursor").and_then(Value::as_str) {
+        println!();
+        println!("Next cursor: {cursor}");
+    }
+    Ok(())
+}
+
+fn print_job_rows(jobs: &[Value]) {
+    let rows = jobs
+        .iter()
+        .map(|job| {
+            vec![
+                field_string(job, "id"),
+                field_string(job, "challenge_id"),
+                field_string(job, "system_id"),
+                field_string(job, "language"),
+                field_string(job, "status"),
+                ns_field(job, "result_time_ns"),
+            ]
+        })
+        .collect::<Vec<_>>();
+    print_table(
+        &["JOB", "CHALLENGE", "SYSTEM", "LANG", "STATUS", "TIME"],
+        &rows,
+    );
+}
+
+fn print_solution(value: &Value) -> Result<()> {
+    println!("Solution: {}", field_string(value, "id"));
+    println!("Challenge: {}", field_string(value, "challenge_id"));
+    println!(
+        "User: {} ({})",
+        field_string(value, "user_display_name"),
+        field_string(value, "user_id")
+    );
+    println!("Language: {}", field_string(value, "language"));
+    if let Some(jobs_url) = value.get("jobs_url").and_then(Value::as_str) {
+        println!("Jobs: {jobs_url}");
+    }
+
+    let source_visible = value
+        .get("source_visible")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if source_visible {
+        if let Some(options) = value.get("compiler_options").and_then(Value::as_str) {
+            println!();
+            println!("Compiler options:");
+            println!("{options}");
+        }
+        if let Some(source) = value.get("source").and_then(Value::as_str) {
+            println!();
+            println!("Source:");
+            println!("{source}");
+        }
+    } else {
+        println!("Source: hidden");
+    }
+    Ok(())
+}
+
 fn string_list(value: Option<&Value>) -> Option<String> {
     value
         .and_then(Value::as_array)
@@ -750,5 +1025,86 @@ fn format_bytes(bytes: u64) -> String {
         format!("{} KiB", bytes / 1024)
     } else {
         format!("{bytes} bytes")
+    }
+}
+
+fn first_str<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str))
+}
+
+fn field_string(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("-")
+        .to_string()
+}
+
+fn field_u64(value: &Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(Value::as_u64)
+}
+
+fn ns_field(value: &Value, key: &str) -> String {
+    field_u64(value, key)
+        .map(format_ns)
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn format_ns(ns: u64) -> String {
+    format!("{:.3} ms", ns as f64 / 1_000_000.0)
+}
+
+fn format_count(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().enumerate() {
+        let remaining = digits.len() - index;
+        if index > 0 && remaining % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn print_table(headers: &[&str], rows: &[Vec<String>]) {
+    let mut widths = headers
+        .iter()
+        .map(|header| header.len())
+        .collect::<Vec<_>>();
+    for row in rows {
+        for (index, cell) in row.iter().enumerate() {
+            if let Some(width) = widths.get_mut(index) {
+                *width = (*width).max(cell.len());
+            }
+        }
+    }
+
+    for (index, header) in headers.iter().enumerate() {
+        if index > 0 {
+            print!("  ");
+        }
+        print!("{header:<width$}", width = widths[index]);
+    }
+    println!();
+
+    for (index, width) in widths.iter().enumerate() {
+        if index > 0 {
+            print!("  ");
+        }
+        print!("{:-<width$}", "");
+    }
+    println!();
+
+    for row in rows {
+        for (index, width) in widths.iter().enumerate() {
+            if index > 0 {
+                print!("  ");
+            }
+            let cell = row.get(index).map(String::as_str).unwrap_or("-");
+            print!("{cell:<width$}");
+        }
+        println!();
     }
 }
