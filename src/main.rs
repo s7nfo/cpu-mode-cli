@@ -18,12 +18,6 @@ const USER_AGENT: &str = concat!("cpu-mode-cli/", env!("CARGO_PKG_VERSION"));
 #[command(name = "cpu-mode")]
 #[command(about = "Command-line client for cpu.mode")]
 struct Cli {
-    #[arg(long, global = true, env = "CPU_MODE_BASE_URL", default_value = DEFAULT_BASE_URL)]
-    base_url: String,
-
-    #[arg(long, global = true, env = "CPU_MODE_TOKEN")]
-    token: Option<String>,
-
     #[arg(long, global = true)]
     raw: bool,
 
@@ -370,11 +364,8 @@ struct AuthPollResponse {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut store = ConfigStore::load()?;
-    let token = cli
-        .token
-        .clone()
-        .or_else(|| store.token().map(str::to_string));
-    let client = ApiClient::new(cli.base_url, token);
+    let token = store.token().map(str::to_string);
+    let client = ApiClient::new(DEFAULT_BASE_URL.to_string(), token);
     let output = OutputMode { raw: cli.raw };
 
     match cli.command {

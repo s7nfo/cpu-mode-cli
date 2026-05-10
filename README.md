@@ -34,8 +34,6 @@ POST /auth/cli/poll
 GET  /auth/session
 ```
 
-For automation, `CPU_MODE_TOKEN` can provide the token directly.
-
 ## Examples
 
 List challenges:
