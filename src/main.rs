@@ -67,8 +67,16 @@ struct ChallengesArgs {
 
 #[derive(Subcommand)]
 enum ChallengesCommand {
-    List,
-    Show { challenge_id: String },
+    List {
+        #[arg(long)]
+        raw: bool,
+    },
+    Show {
+        challenge_id: String,
+
+        #[arg(long)]
+        raw: bool,
+    },
 }
 
 #[derive(Args)]
@@ -440,15 +448,26 @@ async fn auth_login(
 }
 
 async fn handle_challenges(args: ChallengesArgs, client: &ApiClient) -> Result<()> {
-    let value = match args.command {
-        ChallengesCommand::List => client.get("/api/challenges", &[]).await?,
-        ChallengesCommand::Show { challenge_id } => {
-            client
-                .get(&format!("/api/challenges/{}", enc(&challenge_id)), &[])
-                .await?
+    match args.command {
+        ChallengesCommand::List { raw } => {
+            let value = client.get("/api/challenges", &[]).await?;
+            if raw {
+                print_json(&value)
+            } else {
+                print_challenge_list(&value)
+            }
         }
-    };
-    print_json(&value)
+        ChallengesCommand::Show { challenge_id, raw } => {
+            let value = client
+                .get(&format!("/api/challenges/{}", enc(&challenge_id)), &[])
+                .await?;
+            if raw {
+                print_json(&value)
+            } else {
+                print_challenge_detail(&value)
+            }
+        }
+    }
 }
 
 async fn handle_systems(args: SystemsArgs, client: &ApiClient) -> Result<()> {
@@ -612,4 +631,124 @@ fn enc(value: &str) -> String {
 fn print_json(value: &Value) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+fn print_challenge_list(value: &Value) -> Result<()> {
+    let challenges = value
+        .get("challenges")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("challenge list response did not include challenges array"))?;
+
+    let id_width = challenges
+        .iter()
+        .filter_map(|challenge| challenge.get("id").and_then(Value::as_str))
+        .map(str::len)
+        .chain(std::iter::once("ID".len()))
+        .max()
+        .unwrap_or("ID".len());
+    let title_width = challenges
+        .iter()
+        .filter_map(|challenge| challenge.get("title").and_then(Value::as_str))
+        .map(str::len)
+        .chain(std::iter::once("TITLE".len()))
+        .max()
+        .unwrap_or("TITLE".len());
+
+    println!("{:<id_width$}  {:<title_width$}  LANGUAGES", "ID", "TITLE");
+    println!("{:-<id_width$}  {:-<title_width$}  ---------", "", "");
+
+    for challenge in challenges {
+        let id = challenge.get("id").and_then(Value::as_str).unwrap_or("-");
+        let title = challenge
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("-");
+        let languages = challenge
+            .get("languages")
+            .and_then(Value::as_array)
+            .map(|languages| {
+                languages
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .filter(|languages| !languages.is_empty())
+            .unwrap_or_else(|| "-".to_string());
+        println!("{id:<id_width$}  {title:<title_width$}  {languages}");
+    }
+
+    Ok(())
+}
+
+fn print_challenge_detail(value: &Value) -> Result<()> {
+    let id = value.get("id").and_then(Value::as_str).unwrap_or("-");
+    let title = value.get("title").and_then(Value::as_str).unwrap_or("-");
+    println!("{title} ({id})");
+
+    if let Some(description) = value.get("description").and_then(Value::as_array) {
+        println!();
+        for line in description.iter().filter_map(Value::as_str) {
+            println!("{line}");
+        }
+    }
+
+    println!();
+    println!(
+        "Languages: {}",
+        string_list(value.get("languages")).unwrap_or_else(|| "-".to_string())
+    );
+
+    if let Some(limits) = value.get("limits").and_then(Value::as_object) {
+        if let Some(source_bytes) = limits.get("source_bytes").and_then(Value::as_u64) {
+            println!("Source limit: {}", format_bytes(source_bytes));
+        }
+        if let Some(options_bytes) = limits.get("compiler_options_bytes").and_then(Value::as_u64) {
+            println!("Compiler options limit: {}", format_bytes(options_bytes));
+        }
+    }
+
+    if let Some(options) = value.get("compiler_options").and_then(Value::as_object) {
+        println!();
+        println!("Compiler defaults:");
+        if let Some(rust) = options.get("rust_default").and_then(Value::as_str) {
+            println!("  rust: {rust}");
+        }
+        if let Some(cpp) = options.get("cpp_default").and_then(Value::as_str) {
+            println!("  cpp:  {cpp}");
+        }
+    }
+
+    if let Some(urls) = value.get("urls").and_then(Value::as_object) {
+        println!();
+        println!("API paths:");
+        for key in ["leaderboard", "record_history", "submissions"] {
+            if let Some(url) = urls.get(key).and_then(Value::as_str) {
+                println!("  {key}: {url}");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn string_list(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|items| !items.is_empty())
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes % 1024 == 0 {
+        format!("{} KiB", bytes / 1024)
+    } else {
+        format!("{bytes} bytes")
+    }
 }
