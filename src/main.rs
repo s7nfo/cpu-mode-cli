@@ -172,6 +172,12 @@ enum SolutionsCommand {
     Show {
         solution_id: String,
     },
+    Publish {
+        solution_id: String,
+    },
+    Unpublish {
+        solution_id: String,
+    },
     Jobs {
         solution_id: String,
 
@@ -280,6 +286,10 @@ impl ApiClient {
 
     async fn post(&self, path: &str, body: Value) -> Result<Value> {
         self.request(Method::POST, path, &[], Some(body)).await
+    }
+
+    async fn patch(&self, path: &str, body: Value) -> Result<Value> {
+        self.request(Method::PATCH, path, &[], Some(body)).await
     }
 
     async fn request(
@@ -647,6 +657,24 @@ async fn handle_solutions(
                 .await?,
             print_solution,
         ),
+        SolutionsCommand::Publish { solution_id } => output.print(
+            &client
+                .patch(
+                    &format!("/api/solutions/{}", enc(&solution_id)),
+                    json!({ "is_public": true }),
+                )
+                .await?,
+            print_solution_visibility,
+        ),
+        SolutionsCommand::Unpublish { solution_id } => output.print(
+            &client
+                .patch(
+                    &format!("/api/solutions/{}", enc(&solution_id)),
+                    json!({ "is_public": false }),
+                )
+                .await?,
+            print_solution_visibility,
+        ),
         SolutionsCommand::Jobs {
             solution_id,
             limit,
@@ -893,6 +921,15 @@ fn print_leaderboard(value: &Value) -> Result<()> {
                     .map(|rank| rank.to_string())
                     .unwrap_or_else(|| "-".to_string()),
                 field_string(entry, "user_display_name"),
+                if entry
+                    .get("solution_is_public")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    "public".to_string()
+                } else {
+                    "-".to_string()
+                },
                 field_string(entry, "language"),
                 ns_field(entry, "time_ns"),
                 field_u64(entry, "cycles")
@@ -902,7 +939,10 @@ fn print_leaderboard(value: &Value) -> Result<()> {
             ]
         })
         .collect::<Vec<_>>();
-    print_table(&["RANK", "USER", "LANG", "TIME", "CYCLES", "JOB"], &rows);
+    print_table(
+        &["RANK", "USER", "PUBLIC", "LANG", "TIME", "CYCLES", "JOB"],
+        &rows,
+    );
     Ok(())
 }
 
@@ -1024,6 +1064,18 @@ fn print_solution(value: &Value) -> Result<()> {
         field_string(value, "user_id")
     );
     println!("Language: {}", field_string(value, "language"));
+    println!(
+        "Visibility: {}",
+        if value
+            .get("is_public")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            "public"
+        } else {
+            "private"
+        }
+    );
     if let Some(jobs_url) = value.get("jobs_url").and_then(Value::as_str) {
         println!("Jobs: {jobs_url}");
     }
@@ -1046,6 +1098,23 @@ fn print_solution(value: &Value) -> Result<()> {
     } else {
         println!("Source: hidden");
     }
+    Ok(())
+}
+
+fn print_solution_visibility(value: &Value) -> Result<()> {
+    println!("Solution: {}", field_string(value, "solution_id"));
+    println!(
+        "Visibility: {}",
+        if value
+            .get("is_public")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            "public"
+        } else {
+            "private"
+        }
+    );
     Ok(())
 }
 

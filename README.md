@@ -6,16 +6,22 @@ This repository is intentionally separate from the private server and judge repo
 
 ## Install
 
+From crates.io:
+
+```bash
+cargo install cpu-mode
+```
+
 From source:
 
 ```bash
 cargo install --git https://github.com/s7nfo/cpu-mode-cli
 ```
 
-After publishing to crates.io:
+Upgrade an existing install:
 
 ```bash
-cargo install cpu-mode
+cargo install cpu-mode --force
 ```
 
 ## Login
@@ -70,6 +76,19 @@ Download a job profile:
 
 ```bash
 cpu-mode jobs profile job_... --output profile.txt
+```
+
+Show a solution and make it public:
+
+```bash
+cpu-mode solutions show sol_...
+cpu-mode solutions publish sol_...
+```
+
+Make it private again:
+
+```bash
+cpu-mode solutions unpublish sol_...
 ```
 
 Show a user submission history:
