@@ -586,7 +586,7 @@ async fn handle_jobs(args: JobsArgs, client: &ApiClient, output: OutputMode) -> 
             }
             output.print(
                 &client.get("/api/jobs/queue", &query).await?,
-                print_jobs_page,
+                print_queue_jobs_page,
             )
         }
         JobsCommand::Profile {
@@ -1035,6 +1035,24 @@ fn print_jobs_page(value: &Value) -> Result<()> {
     Ok(())
 }
 
+fn print_queue_jobs_page(value: &Value) -> Result<()> {
+    let jobs = value
+        .get("items")
+        .and_then(Value::as_array)
+        .or_else(|| value.as_array())
+        .ok_or_else(|| anyhow!("jobs response did not include items array"))?;
+    if jobs.is_empty() {
+        println!("No jobs.");
+    } else {
+        print_queue_job_rows(jobs);
+    }
+    if let Some(cursor) = value.get("next_cursor").and_then(Value::as_str) {
+        println!();
+        println!("Next cursor: {cursor}");
+    }
+    Ok(())
+}
+
 fn print_job_rows(jobs: &[Value]) {
     let rows = jobs
         .iter()
@@ -1051,6 +1069,28 @@ fn print_job_rows(jobs: &[Value]) {
         .collect::<Vec<_>>();
     print_table(
         &["JOB", "CHALLENGE", "SYSTEM", "LANG", "STATUS", "TIME"],
+        &rows,
+    );
+}
+
+fn print_queue_job_rows(jobs: &[Value]) {
+    let rows = jobs
+        .iter()
+        .map(|job| {
+            vec![
+                first_str(job, &["user_display_name", "user_id"])
+                    .unwrap_or("-")
+                    .to_string(),
+                field_string(job, "challenge_id"),
+                field_string(job, "system_id"),
+                field_string(job, "language"),
+                field_string(job, "status"),
+                ns_field(job, "result_time_ns"),
+            ]
+        })
+        .collect::<Vec<_>>();
+    print_table(
+        &["USER", "CHALLENGE", "SYSTEM", "LANG", "STATUS", "TIME"],
         &rows,
     );
 }
