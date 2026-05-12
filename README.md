@@ -72,6 +72,12 @@ Inspect a job:
 cpu-mode jobs show job_...
 ```
 
+Show queued jobs first, then newest jobs by queue time:
+
+```bash
+cpu-mode jobs queue
+```
+
 Download a job profile:
 
 ```bash

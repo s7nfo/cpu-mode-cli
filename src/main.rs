@@ -125,7 +125,7 @@ enum JobsCommand {
         poll_interval_ms: u64,
     },
     Queue {
-        #[arg(long, default_value_t = 50)]
+        #[arg(long, default_value_t = 10)]
         limit: usize,
 
         #[arg(long)]
@@ -585,7 +585,7 @@ async fn handle_jobs(args: JobsArgs, client: &ApiClient, output: OutputMode) -> 
                 query.push(("cursor", cursor));
             }
             output.print(
-                &client.get("/api/jobs/non-done", &query).await?,
+                &client.get("/api/jobs/queue", &query).await?,
                 print_jobs_page,
             )
         }
