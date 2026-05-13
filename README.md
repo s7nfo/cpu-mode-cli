@@ -66,6 +66,12 @@ Submit a Rust solution and wait for all system jobs:
 cpu-mode submit counting_bytes --lang rust --file solution.rs --wait
 ```
 
+Submit C++ with GCC instead of the default Clang compiler:
+
+```bash
+cpu-mode submit counting_bytes --lang cpp --compiler gcc_cpp --file solution.cpp --wait
+```
+
 Inspect a job:
 
 ```bash

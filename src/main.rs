@@ -91,11 +91,14 @@ struct LeaderboardArgs {
 struct SubmitArgs {
     challenge_id: String,
 
-    #[arg(long, value_parser = ["rust", "cpp"])]
+    #[arg(long, value_parser = ["rust", "cpp", "asm"])]
     lang: String,
 
     #[arg(long)]
     file: PathBuf,
+
+    #[arg(long)]
+    compiler: Option<String>,
 
     #[arg(long)]
     compiler_options: Option<String>,
@@ -533,6 +536,9 @@ async fn handle_submit(args: SubmitArgs, client: &ApiClient, output: OutputMode)
         "language": args.lang,
         "source": source,
     });
+    if let Some(compiler) = args.compiler {
+        body["compiler"] = Value::String(compiler);
+    }
     if let Some(options) = args.compiler_options {
         body["compiler_options"] = Value::String(options);
     }
@@ -844,6 +850,23 @@ fn print_challenge_detail(value: &Value) -> Result<()> {
         "Languages: {}",
         string_list(value.get("languages")).unwrap_or_else(|| "-".to_string())
     );
+    if let Some(compilers) = value.get("compilers").and_then(Value::as_array) {
+        let labels = compilers
+            .iter()
+            .filter_map(|compiler| {
+                let id = compiler.get("id").and_then(Value::as_str)?;
+                let label = compiler.get("label").and_then(Value::as_str).unwrap_or(id);
+                let language = compiler
+                    .get("language")
+                    .and_then(Value::as_str)
+                    .unwrap_or("-");
+                Some(format!("{id} ({label}, {language})"))
+            })
+            .collect::<Vec<_>>();
+        if !labels.is_empty() {
+            println!("Compilers: {}", labels.join(", "));
+        }
+    }
 
     if let Some(limits) = value.get("limits").and_then(Value::as_object) {
         if let Some(source_bytes) = limits.get("source_bytes").and_then(Value::as_u64) {
@@ -862,6 +885,9 @@ fn print_challenge_detail(value: &Value) -> Result<()> {
         }
         if let Some(cpp) = options.get("cpp_default").and_then(Value::as_str) {
             println!("  cpp:  {cpp}");
+        }
+        if let Some(asm) = options.get("asm_default").and_then(Value::as_str) {
+            println!("  asm:  {asm}");
         }
     }
 
@@ -1104,6 +1130,9 @@ fn print_solution(value: &Value) -> Result<()> {
         field_string(value, "user_id")
     );
     println!("Language: {}", field_string(value, "language"));
+    if let Some(compiler) = value.get("compiler").and_then(Value::as_str) {
+        println!("Compiler: {compiler}");
+    }
     println!(
         "Visibility: {}",
         if value
