@@ -60,6 +60,15 @@ Show challenge metadata:
 cpu-mode challenges show counting_bytes
 ```
 
+Read a leaderboard:
+
+```bash
+cpu-mode leaderboard counting_bytes --system raptor_cove_p
+```
+
+Public solutions that are not ranked because the same user has a faster solution
+can still appear with a blank rank.
+
 Submit a Rust solution and wait for all system jobs:
 
 ```bash

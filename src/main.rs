@@ -934,18 +934,41 @@ fn print_leaderboard(value: &Value) -> Result<()> {
         .get("entries")
         .and_then(Value::as_array)
         .ok_or_else(|| anyhow!("leaderboard response did not include entries array"))?;
-    if entries.is_empty() {
+    let open_entries = value
+        .get("open_entries")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let mut display_entries = entries
+        .iter()
+        .map(|entry| (false, entry))
+        .chain(open_entries.iter().map(|entry| (true, entry)))
+        .collect::<Vec<_>>();
+    if display_entries.is_empty() {
         println!("No leaderboard entries.");
         return Ok(());
     }
+    display_entries.sort_by(|(left_open, left), (right_open, right)| {
+        field_u64(left, "time_ns")
+            .unwrap_or(u64::MAX)
+            .cmp(&field_u64(right, "time_ns").unwrap_or(u64::MAX))
+            .then_with(|| field_string(left, "language").cmp(&field_string(right, "language")))
+            .then_with(|| field_string(left, "user_id").cmp(&field_string(right, "user_id")))
+            .then_with(|| left_open.cmp(right_open))
+            .then_with(|| field_string(left, "job_id").cmp(&field_string(right, "job_id")))
+    });
 
-    let rows = entries
+    let rows = display_entries
         .iter()
-        .map(|entry| {
+        .map(|(is_open, entry)| {
             vec![
-                field_u64(entry, "rank")
-                    .map(|rank| rank.to_string())
-                    .unwrap_or_else(|| "-".to_string()),
+                if *is_open {
+                    String::new()
+                } else {
+                    field_u64(entry, "rank")
+                        .map(|rank| rank.to_string())
+                        .unwrap_or_else(|| "-".to_string())
+                },
                 field_string(entry, "user_display_name"),
                 if entry
                     .get("solution_is_public")
