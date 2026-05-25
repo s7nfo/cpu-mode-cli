@@ -66,6 +66,12 @@ Read a leaderboard:
 cpu-mode leaderboard counting_bytes --system raptor_cove_p
 ```
 
+Read the all-system geomean slowdown leaderboard:
+
+```bash
+cpu-mode leaderboard counting_bytes --all-systems
+```
+
 Public solutions that are not ranked because the same user has a faster solution
 can still appear with a blank rank.
 
@@ -97,6 +103,12 @@ Download a job profile:
 
 ```bash
 cpu-mode jobs profile job_... --output profile.txt
+```
+
+Show a job's top-down analysis:
+
+```bash
+cpu-mode jobs top-down job_...
 ```
 
 Show a solution and make it public:

@@ -12,6 +12,8 @@ use serde_json::{Value, json};
 use tokio::time::sleep;
 
 const DEFAULT_BASE_URL: &str = "https://cpu.mattstuchlik.com";
+const ALL_SYSTEMS_ID: &str = "all_systems";
+const RATIO_PPM_SCALE: f64 = 1_000_000.0;
 const USER_AGENT: &str = concat!("cpu-mode-cli/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Parser)]
@@ -85,6 +87,9 @@ struct LeaderboardArgs {
 
     #[arg(long)]
     system: Option<String>,
+
+    #[arg(long)]
+    all_systems: bool,
 }
 
 #[derive(Args)]
@@ -139,6 +144,9 @@ enum JobsCommand {
 
         #[arg(short, long)]
         output: Option<PathBuf>,
+    },
+    TopDown {
+        job_id: String,
     },
 }
 
@@ -517,6 +525,25 @@ async fn handle_leaderboard(
     client: &ApiClient,
     output: OutputMode,
 ) -> Result<()> {
+    let all_systems = args.all_systems || args.system.as_deref().is_some_and(is_all_systems_alias);
+    if all_systems {
+        if let Some(system) = args.system.as_deref() {
+            if args.all_systems && !is_all_systems_alias(system) {
+                bail!("--all-systems cannot be combined with --system {system}");
+            }
+        }
+        let value = client
+            .get(
+                &format!(
+                    "/api/challenges/{}/all-systems-leaderboard",
+                    enc(&args.challenge_id)
+                ),
+                &[],
+            )
+            .await?;
+        return output.print(&value, print_all_systems_leaderboard);
+    }
+
     let mut query = Vec::new();
     if let Some(system) = args.system {
         query.push(("system_id", system));
@@ -625,6 +652,12 @@ async fn handle_jobs(args: JobsArgs, client: &ApiClient, output: OutputMode) -> 
                 Ok(())
             }
         }
+        JobsCommand::TopDown { job_id } => output.print(
+            &client
+                .get(&format!("/api/jobs/{}/top-down", enc(&job_id)), &[])
+                .await?,
+            print_top_down,
+        ),
     }
 }
 
@@ -732,6 +765,10 @@ fn read_source(path: &Path) -> Result<String> {
 
 fn enc(value: &str) -> String {
     urlencoding::encode(value).into_owned()
+}
+
+fn is_all_systems_alias(system: &str) -> bool {
+    matches!(system, ALL_SYSTEMS_ID | "all-systems" | "all")
 }
 
 impl OutputMode {
@@ -995,6 +1032,68 @@ fn print_leaderboard(value: &Value) -> Result<()> {
     Ok(())
 }
 
+fn print_all_systems_leaderboard(value: &Value) -> Result<()> {
+    let challenge = field_string(value, "challenge_id");
+    let system = field_string(value, "system_id");
+    println!("{challenge} / {system}");
+
+    let entries = value
+        .get("entries")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("all-systems leaderboard response did not include entries array"))?;
+    if entries.is_empty() {
+        println!("No leaderboard entries.");
+        return Ok(());
+    }
+
+    let mut display_entries = entries.iter().collect::<Vec<_>>();
+    display_entries.sort_by(|left, right| {
+        field_u64(left, "rank")
+            .unwrap_or(u64::MAX)
+            .cmp(&field_u64(right, "rank").unwrap_or(u64::MAX))
+            .then_with(|| field_u64(left, "score_ppm").cmp(&field_u64(right, "score_ppm")))
+            .then_with(|| field_string(left, "language").cmp(&field_string(right, "language")))
+            .then_with(|| field_string(left, "user_id").cmp(&field_string(right, "user_id")))
+            .then_with(|| {
+                field_string(left, "solution_id").cmp(&field_string(right, "solution_id"))
+            })
+    });
+
+    let rows = display_entries
+        .iter()
+        .map(|entry| {
+            vec![
+                field_u64(entry, "rank")
+                    .map(|rank| rank.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                field_string(entry, "user_display_name"),
+                if entry
+                    .get("solution_is_public")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    "public".to_string()
+                } else {
+                    "-".to_string()
+                },
+                field_string(entry, "language"),
+                field_u64(entry, "score_ppm")
+                    .map(format_ratio_ppm)
+                    .unwrap_or_else(|| "-".to_string()),
+                all_systems_runs_summary(entry),
+                field_string(entry, "solution_id"),
+            ]
+        })
+        .collect::<Vec<_>>();
+    print_table(
+        &[
+            "RANK", "USER", "PUBLIC", "LANG", "GEOMEAN", "RUNS", "SOLUTION",
+        ],
+        &rows,
+    );
+    Ok(())
+}
+
 fn print_submission(value: &Value) -> Result<()> {
     println!("Solution: {}", field_string(value, "solution_id"));
     println!("User: {}", field_string(value, "user_id"));
@@ -1064,6 +1163,124 @@ fn print_job(value: &Value) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn print_top_down(value: &Value) -> Result<()> {
+    let analysis = value
+        .get("analysis")
+        .ok_or_else(|| anyhow!("top-down response did not include analysis"))?;
+    println!("Job: {}", field_string(value, "job_id"));
+    println!("System: {}", field_string(value, "system_id"));
+    println!("Uarch: {}", field_string(analysis, "uarch"));
+    if let Some(slots) = analysis.get("slots").and_then(Value::as_object) {
+        let raw = slots
+            .get("raw")
+            .and_then(Value::as_u64)
+            .map(format_count)
+            .unwrap_or_else(|| "-".to_string());
+        let source = slots.get("source").and_then(Value::as_str).unwrap_or("-");
+        println!("Slots: {raw} ({source})");
+    }
+    if let Some(notes) = string_list(analysis.get("notes")) {
+        println!("Notes: {notes}");
+    }
+
+    print_top_down_metric_table(
+        "Top level",
+        analysis.get("top_level"),
+        &[
+            ("Retiring", "retiring"),
+            ("Bad speculation", "bad_speculation"),
+            ("Frontend bound", "frontend_bound"),
+            ("Backend bound", "backend_bound"),
+            ("Unclassified", "unclassified"),
+        ],
+    );
+    print_top_down_metric_table(
+        "Frontend",
+        analysis.get("frontend"),
+        &[
+            ("All frontend bound", "all"),
+            ("Latency", "latency"),
+            ("Bandwidth", "bandwidth"),
+            ("Other", "other"),
+        ],
+    );
+    print_top_down_metric_table(
+        "Bad speculation",
+        analysis.get("bad_speculation"),
+        &[
+            ("All bad speculation", "all"),
+            ("Branch mispredict", "branch_mispredict"),
+            ("Machine clears", "machine_clears_slots"),
+            ("Other", "other"),
+        ],
+    );
+    print_top_down_metric_table(
+        "Backend",
+        analysis.get("backend"),
+        &[
+            ("All backend bound", "all"),
+            ("Memory bound", "memory_bound"),
+            ("Core bound", "core_bound"),
+            ("Alloc restrictions", "alloc_restrictions"),
+            ("Scheduler", "non_memory_scheduler"),
+            ("Register", "register"),
+            ("Reorder buffer", "reorder_buffer"),
+            ("Serialization", "serialization"),
+            ("Other core", "other_core_bound"),
+        ],
+    );
+    print_top_down_execution_summary(analysis.get("execution"));
+    Ok(())
+}
+
+fn print_top_down_metric_table(title: &str, section: Option<&Value>, metrics: &[(&str, &str)]) {
+    let section = section.and_then(Value::as_object);
+    let rows = metrics
+        .iter()
+        .map(|(label, key)| {
+            top_down_metric_row(label, section.and_then(|section| section.get(*key)))
+        })
+        .collect::<Vec<_>>();
+    println!();
+    println!("{title}:");
+    print_table(&["METRIC", "RAW SLOTS", "% SLOTS", "% PARENT"], &rows);
+}
+
+fn top_down_metric_row(label: &str, metric: Option<&Value>) -> Vec<String> {
+    vec![
+        label.to_string(),
+        top_down_raw(metric),
+        top_down_fraction(metric, "fraction_of_slots"),
+        top_down_fraction(metric, "fraction_of_parent"),
+    ]
+}
+
+fn print_top_down_execution_summary(execution: Option<&Value>) {
+    let Some(execution) = execution else {
+        return;
+    };
+    let ipc = execution
+        .get("ipc")
+        .and_then(Value::as_f64)
+        .map(|ipc| format!("{ipc:.3}"))
+        .unwrap_or_else(|| "-".to_string());
+    let branch_mispredict = execution
+        .get("branch_mispredict_rate")
+        .and_then(|metric| metric.get("fraction"))
+        .and_then(Value::as_f64)
+        .map(format_percent)
+        .unwrap_or_else(|| "-".to_string());
+    println!();
+    println!("Execution:");
+    print_table(
+        &["METRIC", "VALUE"],
+        &[
+            vec!["IPC".to_string(), ipc],
+            vec!["Branch mispredict rate".to_string(), branch_mispredict],
+        ],
+    );
 }
 
 fn print_jobs_page(value: &Value) -> Result<()> {
@@ -1254,6 +1471,33 @@ fn ns_field(value: &Value, key: &str) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
+fn top_down_raw(metric: Option<&Value>) -> String {
+    metric
+        .and_then(|metric| metric.get("raw"))
+        .and_then(|raw| {
+            raw.as_i64()
+                .map(format_signed_count)
+                .or_else(|| raw.as_u64().map(format_count))
+        })
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn top_down_fraction(metric: Option<&Value>, key: &str) -> String {
+    metric
+        .and_then(|metric| metric.get(key))
+        .and_then(Value::as_f64)
+        .map(format_percent)
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn format_percent(fraction: f64) -> String {
+    format!("{:.2}%", fraction * 100.0)
+}
+
+fn format_ratio_ppm(ppm: u64) -> String {
+    format!("{:.3}x", ppm as f64 / RATIO_PPM_SCALE)
+}
+
 fn format_ns(ns: u64) -> String {
     format!("{:.3} ms", ns as f64 / 1_000_000.0)
 }
@@ -1271,6 +1515,14 @@ fn format_count(value: u64) -> String {
     out
 }
 
+fn format_signed_count(value: i64) -> String {
+    if value < 0 {
+        format!("-{}", format_count(value.unsigned_abs()))
+    } else {
+        format_count(value as u64)
+    }
+}
+
 fn safe_filename_component(value: &str) -> String {
     value
         .chars()
@@ -1279,6 +1531,26 @@ fn safe_filename_component(value: &str) -> String {
             _ => '_',
         })
         .collect()
+}
+
+fn all_systems_runs_summary(entry: &Value) -> String {
+    entry
+        .get("runs")
+        .and_then(Value::as_array)
+        .map(|runs| {
+            runs.iter()
+                .map(|run| {
+                    let system = run.get("system_id").and_then(Value::as_str).unwrap_or("-");
+                    let ratio = field_u64(run, "ratio_ppm")
+                        .map(format_ratio_ppm)
+                        .unwrap_or_else(|| "-".to_string());
+                    format!("{system}={ratio}")
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|summary| !summary.is_empty())
+        .unwrap_or_else(|| "-".to_string())
 }
 
 fn print_table(headers: &[&str], rows: &[Vec<String>]) {
@@ -1319,5 +1591,57 @@ fn print_table(headers: &[&str], rows: &[Vec<String>]) {
             print!("{cell:<width$}");
         }
         println!();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_systems_aliases_are_accepted() {
+        assert!(is_all_systems_alias("all_systems"));
+        assert!(is_all_systems_alias("all-systems"));
+        assert!(is_all_systems_alias("all"));
+        assert!(!is_all_systems_alias("raptor_cove_p"));
+    }
+
+    #[test]
+    fn formats_ratio_ppm_as_slowdown() {
+        assert_eq!(format_ratio_ppm(1_000_000), "1.000x");
+        assert_eq!(format_ratio_ppm(1_091_039), "1.091x");
+    }
+
+    #[test]
+    fn summarizes_all_systems_runs() {
+        let entry = json!({
+            "runs": [
+                {"system_id": "raptor_cove_p", "ratio_ppm": 1_190_366},
+                {"system_id": "gracemont_e", "ratio_ppm": 1_000_000}
+            ]
+        });
+        assert_eq!(
+            all_systems_runs_summary(&entry),
+            "raptor_cove_p=1.190x, gracemont_e=1.000x"
+        );
+    }
+
+    #[test]
+    fn formats_top_down_metric_rows() {
+        let metric = json!({
+            "raw": -24056,
+            "fraction_of_slots": -0.0001,
+            "fraction_of_parent": null
+        });
+
+        assert_eq!(
+            top_down_metric_row("Unclassified", Some(&metric)),
+            vec![
+                "Unclassified".to_string(),
+                "-24,056".to_string(),
+                "-0.01%".to_string(),
+                "-".to_string(),
+            ]
+        );
     }
 }
