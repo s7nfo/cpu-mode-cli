@@ -38,7 +38,48 @@ The server-side auth endpoints are:
 POST /auth/cli/start
 POST /auth/cli/poll
 GET  /auth/session
+POST /api/auth/agent-tokens
 ```
+
+The stored token can be overridden per invocation with environment variables, checked
+in this order:
+
+```text
+CPU_MODE_TOKEN       token value
+CPU_MODE_TOKEN_FILE  path to a file containing the token
+```
+
+## Agent tokens
+
+To attribute and isolate submissions made by an AI agent, mint a token scoped to an
+agent name (requires a regular `cpu-mode auth login` first):
+
+```bash
+cpu-mode auth create-agent-token --agent claude-fable-5
+```
+
+Agent names are limited to 64 bytes of `[A-Za-z0-9._-]`. The scope is enforced
+server-side:
+
+- Solutions submitted with the token are stamped with the agent name (visible as
+  `agent` in API responses and in `cpu-mode solutions show`). The label always comes
+  from the token and cannot be set in the submission request.
+- The token can only read solution source, compiler options, and job profiles from
+  the same agent — other solutions, including public ones, stay hidden.
+- The token cannot mint further tokens.
+
+To hand the token to an agent without letting it tamper with the scope, store it in a
+file the agent process cannot write and point the agent's environment at it:
+
+```bash
+cpu-mode auth create-agent-token --agent claude-fable-5   # prints the token
+sudo tee /etc/cpu-mode/agent-token > /dev/null            # paste token
+sudo chmod 444 /etc/cpu-mode/agent-token
+export CPU_MODE_TOKEN_FILE=/etc/cpu-mode/agent-token
+```
+
+Make sure the agent's environment has no regular (unscoped) credentials, i.e. no
+`cpu-mode auth login` config in its home directory.
 
 ## Examples
 

@@ -48,6 +48,7 @@ struct AuthArgs {
 #[derive(Subcommand)]
 enum AuthCommand {
     Login(AuthLoginArgs),
+    CreateAgentToken(CreateAgentTokenArgs),
     Status,
     Logout,
 }
@@ -56,6 +57,12 @@ enum AuthCommand {
 struct AuthLoginArgs {
     #[arg(long)]
     no_store: bool,
+}
+
+#[derive(Args)]
+struct CreateAgentTokenArgs {
+    #[arg(long)]
+    agent: String,
 }
 
 #[derive(Args)]
@@ -249,6 +256,26 @@ impl ConfigStore {
     }
 }
 
+fn resolve_token(store: &ConfigStore) -> Result<Option<String>> {
+    if let Ok(token) = std::env::var("CPU_MODE_TOKEN") {
+        let token = token.trim();
+        if !token.is_empty() {
+            return Ok(Some(token.to_string()));
+        }
+    }
+    if let Some(path) = std::env::var_os("CPU_MODE_TOKEN_FILE") {
+        let path = PathBuf::from(path);
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("read CPU_MODE_TOKEN_FILE {}", path.display()))?;
+        let token = contents.trim();
+        if token.is_empty() {
+            bail!("CPU_MODE_TOKEN_FILE {} is empty", path.display());
+        }
+        return Ok(Some(token.to_string()));
+    }
+    Ok(store.token().map(str::to_string))
+}
+
 fn config_path() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("CPU_MODE_CONFIG") {
         return Ok(PathBuf::from(path));
@@ -385,7 +412,7 @@ struct AuthPollResponse {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut store = ConfigStore::load()?;
-    let token = store.token().map(str::to_string);
+    let token = resolve_token(&store)?;
     let client = ApiClient::new(DEFAULT_BASE_URL.to_string(), token);
     let output = OutputMode { raw: cli.raw };
 
@@ -414,6 +441,12 @@ async fn handle_auth(
 ) -> Result<()> {
     match args.command {
         AuthCommand::Login(args) => auth_login(args, client, store, output).await,
+        AuthCommand::CreateAgentToken(args) => {
+            let value = client
+                .post("/api/auth/agent-tokens", json!({ "agent": args.agent }))
+                .await?;
+            output.print(&value, print_agent_token)
+        }
         AuthCommand::Status => {
             let session = client.get("/auth/session", &[]).await?;
             output.print(&session, print_auth_status)
@@ -813,6 +846,13 @@ fn print_auth_login(value: &Value) -> Result<()> {
 
 fn print_logout(_: &Value) -> Result<()> {
     println!("Local token removed");
+    Ok(())
+}
+
+fn print_agent_token(value: &Value) -> Result<()> {
+    println!("Agent: {}", field_string(value, "agent"));
+    println!("Token: {}", field_string(value, "token"));
+    eprintln!("Store this token now; it is not shown again.");
     Ok(())
 }
 
@@ -1372,6 +1412,9 @@ fn print_solution(value: &Value) -> Result<()> {
     println!("Language: {}", field_string(value, "language"));
     if let Some(compiler) = value.get("compiler").and_then(Value::as_str) {
         println!("Compiler: {compiler}");
+    }
+    if let Some(agent) = value.get("agent").and_then(Value::as_str) {
+        println!("Agent: {agent}");
     }
     println!(
         "Visibility: {}",
